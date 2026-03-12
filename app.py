@@ -210,13 +210,24 @@ def stock_quote(ticker):
         t = yf.Ticker(ticker)
         info = t.info
 
-        price = info.get('currentPrice') or info.get('regularMarketPrice')
+        # Try pre/post market price first, then regular
+        price = (info.get('preMarketPrice')
+                 or info.get('postMarketPrice')
+                 or info.get('currentPrice')
+                 or info.get('regularMarketPrice'))
         if price is None:
             return jsonify({'error': 'Ticker not found'}), 404
 
         prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose') or price
         change = round(float(price) - float(prev_close), 2)
         change_pct = round((change / float(prev_close)) * 100, 2) if prev_close else 0.0
+
+        # Determine which session the price is from
+        price_session = 'regular'
+        if info.get('preMarketPrice'):
+            price_session = 'pre_market'
+        elif info.get('postMarketPrice'):
+            price_session = 'after_hours'
 
         return jsonify({
             'ticker': ticker,
@@ -229,9 +240,59 @@ def stock_quote(ticker):
             'volume': info.get('volume', 0) or 0,
             'day_high': round(float(info.get('dayHigh', price)), 2),
             'day_low': round(float(info.get('dayLow', price)), 2),
+            'price_session': price_session,
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/stocks/live-prices', methods=['POST'])
+def live_stock_prices():
+    """Fetch real-time prices (including pre/post market) for a list of tickers."""
+    import yfinance as yf
+
+    data = request.get_json() or {}
+    tickers = data.get('tickers', [])
+
+    if not tickers or not isinstance(tickers, list):
+        return jsonify({'error': 'Provide a non-empty list of tickers'}), 400
+    if len(tickers) > 30:
+        return jsonify({'error': 'Maximum 30 tickers per request'}), 400
+
+    tickers = [t.upper().strip() for t in tickers]
+    results = {}
+
+    for t in tickers:
+        try:
+            info = yf.Ticker(t).info
+            price = (info.get('preMarketPrice')
+                     or info.get('postMarketPrice')
+                     or info.get('currentPrice')
+                     or info.get('regularMarketPrice'))
+            if price is None:
+                continue
+
+            prev_close = info.get('previousClose') or price
+            change = round(float(price) - float(prev_close), 2)
+            change_pct = round((change / float(prev_close)) * 100, 2) if prev_close else 0.0
+
+            session = 'regular'
+            if info.get('preMarketPrice'):
+                session = 'pre_market'
+            elif info.get('postMarketPrice'):
+                session = 'after_hours'
+
+            results[t] = {
+                'price': round(float(price), 2),
+                'previous_close': round(float(prev_close), 2),
+                'change': change,
+                'change_pct': change_pct,
+                'price_session': session,
+            }
+        except Exception:
+            continue
+
+    return jsonify({'prices': results}), 200
 
 
 @app.route('/api/stocks/prices', methods=['POST'])
