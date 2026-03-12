@@ -200,6 +200,40 @@ def stock_price(ticker):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/stock/<ticker>/quote')
+def stock_quote(ticker):
+    """Full quote for any ticker — used for searching stocks not in S&P/NASDAQ."""
+    import yfinance as yf
+
+    ticker = ticker.upper().strip()
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info
+
+        price = info.get('currentPrice') or info.get('regularMarketPrice')
+        if price is None:
+            return jsonify({'error': 'Ticker not found'}), 404
+
+        prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose') or price
+        change = round(float(price) - float(prev_close), 2)
+        change_pct = round((change / float(prev_close)) * 100, 2) if prev_close else 0.0
+
+        return jsonify({
+            'ticker': ticker,
+            'name': info.get('shortName', ticker),
+            'sector': info.get('sector', info.get('industry', 'N/A')),
+            'price': round(float(price), 2),
+            'previous_close': round(float(prev_close), 2),
+            'change': change,
+            'change_pct': change_pct,
+            'volume': info.get('volume', 0) or 0,
+            'day_high': round(float(info.get('dayHigh', price)), 2),
+            'day_low': round(float(info.get('dayLow', price)), 2),
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/stocks/prices', methods=['POST'])
 def batch_stock_prices():
     import yfinance as yf
