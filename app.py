@@ -9,11 +9,14 @@ from scanner import run_full_scan, fetch_financials, detect_patterns, get_sp500_
 app = Flask(__name__)
 CORS(app)
 
-# ── Cache for /api/stocks/all (refreshes every 5 min to save memory) ──
+# ── Cache for /api/stocks/all ──
+# TTL is 60s during market hours, 300s when closed
 _all_stocks_cache = {
     'data': None,
     'timestamp': 0,
-    'ttl': 300,
+    'ttl': 60,       # default 60s, adjusted dynamically
+    'ttl_open': 60,  # during market/pre-market/after-hours
+    'ttl_closed': 300,  # when market is closed
 }
 
 # In-memory scan state (single-user app)
@@ -417,8 +420,15 @@ def all_stocks():
     now = _time.time()
     cache = _all_stocks_cache
 
+    # Determine TTL based on market status
+    eastern_now = pd.Timestamp.now(tz='US/Eastern')
+    weekday = eastern_now.weekday()
+    time_min = eastern_now.hour * 60 + eastern_now.minute
+    is_active = (weekday < 5 and 4 * 60 <= time_min < 20 * 60)
+    ttl = cache['ttl_open'] if is_active else cache['ttl_closed']
+
     # Return cached data if fresh
-    if cache['data'] is not None and (now - cache['timestamp']) < cache['ttl']:
+    if cache['data'] is not None and (now - cache['timestamp']) < ttl:
         return jsonify(cache['data'])
 
     try:
@@ -498,5 +508,5 @@ def all_stocks():
 
 if __name__ == '__main__':
     import os
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 5002))
     app.run(debug=True, threaded=True, port=port, host='0.0.0.0')
