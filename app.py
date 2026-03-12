@@ -327,15 +327,22 @@ def all_stocks():
         return jsonify(cache['data'])
 
     try:
-        # Get S&P 500 tickers (limit to top 100 for free tier memory)
+        # Get S&P 500 + NASDAQ-100 tickers
         sp500_df = get_sp500_tickers()
-        combined_df = sp500_df.head(100)
+
+        try:
+            nasdaq_df = get_nasdaq100_tickers()
+        except Exception:
+            nasdaq_df = pd.DataFrame(columns=['ticker', 'name', 'sector'])
+
+        combined_df = pd.concat([sp500_df, nasdaq_df], ignore_index=True)
+        combined_df = combined_df.drop_duplicates(subset='ticker', keep='first')
 
         tickers = combined_df['ticker'].tolist()
         ticker_to_name = dict(zip(combined_df['ticker'], combined_df['name']))
         ticker_to_sector = dict(zip(combined_df['ticker'], combined_df['sector']))
 
-        # Download all 100 tickers in one call (fits in 512MB)
+        # Download all tickers in one call (Railway has enough memory)
         df = yf.download(tickers=tickers, period='2d', interval='1d', progress=False)
 
         stocks = []
