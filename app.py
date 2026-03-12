@@ -327,82 +327,61 @@ def all_stocks():
         return jsonify(cache['data'])
 
     try:
-        # Get S&P 500 tickers
+        # Get S&P 500 tickers (limit to top 100 for free tier memory)
         sp500_df = get_sp500_tickers()
-
-        # Get NASDAQ-100 tickers
-        try:
-            nasdaq_df = get_nasdaq100_tickers()
-        except Exception:
-            nasdaq_df = pd.DataFrame(columns=['ticker', 'name', 'sector'])
-
-        # Merge both lists (deduplicate by ticker, S&P 500 takes priority)
-        combined_df = pd.concat([sp500_df, nasdaq_df], ignore_index=True)
-        combined_df = combined_df.drop_duplicates(subset='ticker', keep='first')
+        combined_df = sp500_df.head(100)
 
         tickers = combined_df['ticker'].tolist()
         ticker_to_name = dict(zip(combined_df['ticker'], combined_df['name']))
         ticker_to_sector = dict(zip(combined_df['ticker'], combined_df['sector']))
 
-        # Download in small batches to stay within 512MB memory limit
-        BATCH_SIZE = 50
+        # Download all 100 tickers in one call (fits in 512MB)
+        df = yf.download(tickers=tickers, period='2d', interval='1d', progress=False)
+
         stocks = []
+        if df is not None and len(df) > 0:
+            for t in tickers:
+                try:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        close_series = df['Close'][t].dropna()
+                        vol_series = df['Volume'][t]
+                        high_series = df['High'][t]
+                        low_series = df['Low'][t]
+                    else:
+                        close_series = df['Close'].dropna()
+                        vol_series = df['Volume']
+                        high_series = df['High']
+                        low_series = df['Low']
 
-        for i in range(0, len(tickers), BATCH_SIZE):
-            batch = tickers[i:i + BATCH_SIZE]
-
-            try:
-                df = yf.download(tickers=batch, period='2d', interval='1d', progress=False)
-
-                if df is None or len(df) == 0:
-                    continue
-
-                for t in batch:
-                    try:
-                        if len(batch) > 1 and isinstance(df.columns, pd.MultiIndex):
-                            close_series = df['Close'][t].dropna()
-                            vol_series = df['Volume'][t]
-                            high_series = df['High'][t]
-                            low_series = df['Low'][t]
-                        else:
-                            close_series = df['Close'].dropna() if not isinstance(df.columns, pd.MultiIndex) else df['Close'][t].dropna()
-                            vol_series = df['Volume'] if not isinstance(df.columns, pd.MultiIndex) else df['Volume'][t]
-                            high_series = df['High'] if not isinstance(df.columns, pd.MultiIndex) else df['High'][t]
-                            low_series = df['Low'] if not isinstance(df.columns, pd.MultiIndex) else df['Low'][t]
-
-                        if len(close_series) < 2:
-                            continue
-
-                        current = round(float(close_series.iloc[-1]), 2)
-                        prev_close = round(float(close_series.iloc[-2]), 2)
-                        change = round(current - prev_close, 2)
-                        change_pct = round((change / prev_close) * 100, 2) if prev_close != 0 else 0.0
-
-                        volume = int(vol_series.iloc[-1]) if pd.notna(vol_series.iloc[-1]) else 0
-                        day_high = round(float(high_series.iloc[-1]), 2) if pd.notna(high_series.iloc[-1]) else current
-                        day_low = round(float(low_series.iloc[-1]), 2) if pd.notna(low_series.iloc[-1]) else current
-
-                        stocks.append({
-                            'ticker': t,
-                            'name': ticker_to_name.get(t, t),
-                            'sector': ticker_to_sector.get(t, ''),
-                            'price': current,
-                            'previous_close': prev_close,
-                            'change': change,
-                            'change_pct': change_pct,
-                            'volume': volume,
-                            'day_high': day_high,
-                            'day_low': day_low,
-                        })
-                    except Exception:
+                    if len(close_series) < 2:
                         continue
 
-                # Free memory after each batch
-                del df
-                gc.collect()
+                    current = round(float(close_series.iloc[-1]), 2)
+                    prev_close = round(float(close_series.iloc[-2]), 2)
+                    change = round(current - prev_close, 2)
+                    change_pct = round((change / prev_close) * 100, 2) if prev_close != 0 else 0.0
 
-            except Exception:
-                continue
+                    volume = int(vol_series.iloc[-1]) if pd.notna(vol_series.iloc[-1]) else 0
+                    day_high = round(float(high_series.iloc[-1]), 2) if pd.notna(high_series.iloc[-1]) else current
+                    day_low = round(float(low_series.iloc[-1]), 2) if pd.notna(low_series.iloc[-1]) else current
+
+                    stocks.append({
+                        'ticker': t,
+                        'name': ticker_to_name.get(t, t),
+                        'sector': ticker_to_sector.get(t, ''),
+                        'price': current,
+                        'previous_close': prev_close,
+                        'change': change,
+                        'change_pct': change_pct,
+                        'volume': volume,
+                        'day_high': day_high,
+                        'day_low': day_low,
+                    })
+                except Exception:
+                    continue
+
+            del df
+            gc.collect()
 
         stocks.sort(key=lambda x: x['ticker'])
 
