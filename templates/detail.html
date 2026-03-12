@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ ticker }} - Financial Analysis</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+    <header>
+        <h1>{{ ticker }} - Financial Analysis</h1>
+        <p class="subtitle"><a href="/" class="back-link">Back to Scanner</a></p>
+    </header>
+
+    <main>
+        <div id="loading">Loading financial data...</div>
+
+        <div id="content" class="hidden">
+            <!-- Health Summary -->
+            <section id="health-summary" class="card">
+                <h2>3-Year Financial Health Summary</h2>
+                <div id="health-grid" class="health-grid"></div>
+            </section>
+
+            <!-- Technical Patterns -->
+            <section id="patterns-section" class="card hidden">
+                <h2>Bullish Chart Patterns</h2>
+                <div id="patterns-grid" class="patterns-grid"></div>
+            </section>
+
+            <!-- Charts -->
+            <section class="charts-grid">
+                <div class="chart-card">
+                    <h3>Revenue</h3>
+                    <canvas id="chart-revenue"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3>Net Income</h3>
+                    <canvas id="chart-net-income"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3>Free Cash Flow</h3>
+                    <canvas id="chart-fcf"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3>Profit Margin (%)</h3>
+                    <canvas id="chart-margin"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3>Assets vs Liabilities</h3>
+                    <canvas id="chart-balance"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3>Shares Outstanding</h3>
+                    <canvas id="chart-shares"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3>Earnings Per Share (EPS)</h3>
+                    <canvas id="chart-eps"></canvas>
+                </div>
+            </section>
+
+            <!-- Raw Data Table -->
+            <section class="card">
+                <h2>Financial Data</h2>
+                <div class="table-container">
+                    <table id="data-table">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        const TICKER = "{{ ticker }}";
+    </script>
+    <script src="{{ url_for('static', filename='detail.js') }}"></script>
+</body>
+</html>
