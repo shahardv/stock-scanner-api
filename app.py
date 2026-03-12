@@ -9,11 +9,11 @@ from scanner import run_full_scan, fetch_financials, detect_patterns, get_sp500_
 app = Flask(__name__)
 CORS(app)
 
-# ── Cache for /api/stocks/all (refreshes every 30s) ──
+# ── Cache for /api/stocks/all (refreshes every 5 min to save memory) ──
 _all_stocks_cache = {
     'data': None,
     'timestamp': 0,
-    'ttl': 30,
+    'ttl': 300,
 }
 
 # In-memory scan state (single-user app)
@@ -317,6 +317,7 @@ def all_stocks():
     import yfinance as yf
     import pandas as pd
     import time as _time
+    import gc
 
     now = _time.time()
     cache = _all_stocks_cache
@@ -343,48 +344,63 @@ def all_stocks():
         ticker_to_name = dict(zip(combined_df['ticker'], combined_df['name']))
         ticker_to_sector = dict(zip(combined_df['ticker'], combined_df['sector']))
 
-        # Download last 5 business days to ensure we have a previous close
-        df = yf.download(tickers=tickers, period='5d', interval='1d', progress=False)
-
+        # Download in small batches to stay within 512MB memory limit
+        BATCH_SIZE = 50
         stocks = []
-        for t in tickers:
-            try:
-                if isinstance(df.columns, pd.MultiIndex):
-                    close_series = df['Close'][t].dropna()
-                    vol_series = df['Volume'][t]
-                    high_series = df['High'][t]
-                    low_series = df['Low'][t]
-                else:
-                    # Single ticker edge case
-                    close_series = df['Close'].dropna()
-                    vol_series = df['Volume']
-                    high_series = df['High']
-                    low_series = df['Low']
 
-                if len(close_series) < 2:
+        for i in range(0, len(tickers), BATCH_SIZE):
+            batch = tickers[i:i + BATCH_SIZE]
+
+            try:
+                df = yf.download(tickers=batch, period='2d', interval='1d', progress=False)
+
+                if df is None or len(df) == 0:
                     continue
 
-                current = round(float(close_series.iloc[-1]), 2)
-                prev_close = round(float(close_series.iloc[-2]), 2)
-                change = round(current - prev_close, 2)
-                change_pct = round((change / prev_close) * 100, 2) if prev_close != 0 else 0.0
+                for t in batch:
+                    try:
+                        if len(batch) > 1 and isinstance(df.columns, pd.MultiIndex):
+                            close_series = df['Close'][t].dropna()
+                            vol_series = df['Volume'][t]
+                            high_series = df['High'][t]
+                            low_series = df['Low'][t]
+                        else:
+                            close_series = df['Close'].dropna() if not isinstance(df.columns, pd.MultiIndex) else df['Close'][t].dropna()
+                            vol_series = df['Volume'] if not isinstance(df.columns, pd.MultiIndex) else df['Volume'][t]
+                            high_series = df['High'] if not isinstance(df.columns, pd.MultiIndex) else df['High'][t]
+                            low_series = df['Low'] if not isinstance(df.columns, pd.MultiIndex) else df['Low'][t]
 
-                volume = int(vol_series.iloc[-1]) if pd.notna(vol_series.iloc[-1]) else 0
-                day_high = round(float(high_series.iloc[-1]), 2) if pd.notna(high_series.iloc[-1]) else current
-                day_low = round(float(low_series.iloc[-1]), 2) if pd.notna(low_series.iloc[-1]) else current
+                        if len(close_series) < 2:
+                            continue
 
-                stocks.append({
-                    'ticker': t,
-                    'name': ticker_to_name.get(t, t),
-                    'sector': ticker_to_sector.get(t, ''),
-                    'price': current,
-                    'previous_close': prev_close,
-                    'change': change,
-                    'change_pct': change_pct,
-                    'volume': volume,
-                    'day_high': day_high,
-                    'day_low': day_low,
-                })
+                        current = round(float(close_series.iloc[-1]), 2)
+                        prev_close = round(float(close_series.iloc[-2]), 2)
+                        change = round(current - prev_close, 2)
+                        change_pct = round((change / prev_close) * 100, 2) if prev_close != 0 else 0.0
+
+                        volume = int(vol_series.iloc[-1]) if pd.notna(vol_series.iloc[-1]) else 0
+                        day_high = round(float(high_series.iloc[-1]), 2) if pd.notna(high_series.iloc[-1]) else current
+                        day_low = round(float(low_series.iloc[-1]), 2) if pd.notna(low_series.iloc[-1]) else current
+
+                        stocks.append({
+                            'ticker': t,
+                            'name': ticker_to_name.get(t, t),
+                            'sector': ticker_to_sector.get(t, ''),
+                            'price': current,
+                            'previous_close': prev_close,
+                            'change': change,
+                            'change_pct': change_pct,
+                            'volume': volume,
+                            'day_high': day_high,
+                            'day_low': day_low,
+                        })
+                    except Exception:
+                        continue
+
+                # Free memory after each batch
+                del df
+                gc.collect()
+
             except Exception:
                 continue
 
