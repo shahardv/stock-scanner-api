@@ -92,6 +92,13 @@ main {
     margin-top: -0.5rem;
 }
 
+.scan-btn-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+}
+
 #scan-btn {
     background: #4361ee;
     color: white;
@@ -102,7 +109,27 @@ main {
     font-size: 1rem;
     font-weight: 600;
     transition: background 0.2s, transform 0.1s;
-    margin-left: auto;
+}
+
+.stop-btn {
+    background: transparent;
+    color: #c62828;
+    border: 1.5px solid #c62828;
+    padding: 0.75rem 1.5rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: 600;
+    transition: background 0.2s;
+}
+
+.stop-btn:hover {
+    background: rgba(198, 40, 40, 0.08);
+}
+
+.stop-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 #scan-btn:hover {
@@ -260,9 +287,17 @@ tbody td:first-child {
     color: #4361ee;
 }
 
-tbody td:nth-child(2),
+tbody td:nth-child(2) {
+    text-align: left;
+}
+
+/* Company name — truncate so other columns stay visible */
 tbody td:nth-child(3) {
     text-align: left;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 tbody tr:nth-child(even) {

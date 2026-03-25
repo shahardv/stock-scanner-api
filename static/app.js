@@ -146,6 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const thresholdSlider = document.getElementById('threshold');
     const thresholdValue = document.getElementById('threshold-value');
     const scanBtn = document.getElementById('scan-btn');
+    const stopBtn = document.getElementById('stop-btn');
     const progressSection = document.getElementById('progress');
     const progressBar = document.getElementById('progress-bar');
     const progressMessage = document.getElementById('progress-message');
@@ -214,6 +215,9 @@ document.addEventListener('DOMContentLoaded', () => {
     scanBtn.addEventListener('click', async () => {
         scanBtn.disabled = true;
         scanBtn.textContent = 'Scanning...';
+        stopBtn.classList.remove('hidden');
+        stopBtn.disabled = false;
+        stopBtn.textContent = '⛔ Stop Scan';
         progressSection.classList.remove('hidden');
         resultsSection.classList.add('hidden');
         progressBar.style.width = '0%';
@@ -253,7 +257,16 @@ document.addEventListener('DOMContentLoaded', () => {
     function resetScanBtn() {
         scanBtn.disabled = false;
         scanBtn.textContent = 'Scan Now';
+        stopBtn.classList.add('hidden');
     }
+
+    stopBtn.addEventListener('click', async () => {
+        stopBtn.disabled = true;
+        stopBtn.textContent = 'Stopping...';
+        try {
+            await fetch('/api/scan/stop', { method: 'POST' });
+        } catch (e) { /* ignore */ }
+    });
 
     function listenForProgress() {
         const evtSource = new EventSource('/api/scan/progress');
