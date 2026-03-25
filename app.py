@@ -4,7 +4,7 @@ import json
 import threading
 import queue
 import pandas as pd
-from scanner import run_full_scan, fetch_financials, detect_patterns, get_sp500_tickers
+from scanner import run_full_scan, fetch_financials, detect_patterns, get_sp500_tickers, get_all_nasdaq_tickers
 
 app = Flask(__name__)
 CORS(app)
@@ -384,30 +384,6 @@ def market_status():
     })
 
 
-def get_nasdaq100_tickers():
-    """Scrape NASDAQ-100 tickers from Wikipedia."""
-    import io
-    import urllib.request
-    url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-    req = urllib.request.Request(url, headers={'User-Agent': 'StockScanner/1.0'})
-    with urllib.request.urlopen(req) as resp:
-        html = resp.read().decode('utf-8')
-    tables = pd.read_html(io.StringIO(html))
-    for table in tables:
-        if 'Ticker' in table.columns and 'Company' in table.columns:
-            # Find the sector/industry column (name varies)
-            sector_col = None
-            for col in table.columns:
-                if 'industry' in col.lower() or 'sector' in col.lower():
-                    sector_col = col
-                    break
-            result = pd.DataFrame({
-                'ticker': table['Ticker'],
-                'name': table['Company'],
-                'sector': table[sector_col] if sector_col else 'N/A',
-            })
-            return result
-    return pd.DataFrame(columns=['ticker', 'name', 'sector'])
 
 
 @app.route('/api/stocks/all')
@@ -432,11 +408,11 @@ def all_stocks():
         return jsonify(cache['data'])
 
     try:
-        # Get S&P 500 + NASDAQ-100 tickers
+        # Get S&P 500 + all NASDAQ tickers
         sp500_df = get_sp500_tickers()
 
         try:
-            nasdaq_df = get_nasdaq100_tickers()
+            nasdaq_df = get_all_nasdaq_tickers()
         except Exception:
             nasdaq_df = pd.DataFrame(columns=['ticker', 'name', 'sector'])
 
@@ -506,7 +482,118 @@ def all_stocks():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/news')
+def get_news():
+    """
+    Fetch recent news for a set of tickers + broad market ETFs.
+    Query param: tickers=AAPL,MSFT,...  (optional, max 15 stock tickers)
+    Always includes SPY / QQQ / DIA / IWM for general market news.
+    Returns up to 60 articles sorted newest-first, with pre-market flag.
+    """
+    import yfinance as yf
+    import time as _time
+
+    tickers_param = request.args.get('tickers', '')
+    requested = [t.strip().upper() for t in tickers_param.split(',') if t.strip()][:15]
+
+    # Always include broad market tickers for general news
+    market_tickers = ['SPY', 'QQQ', 'DIA', 'IWM']
+    all_tickers = list(dict.fromkeys(market_tickers + requested))   # preserve order, deduplicate
+
+    news_items = []
+    seen_uuids = set()
+
+    for ticker in all_tickers:
+        try:
+            t_obj = yf.Ticker(ticker)
+            raw_news = t_obj.news or []
+            for item in raw_news[:8]:       # up to 8 articles per ticker
+                # ── Support both old flat format and new nested 'content' format ──
+                content = item.get('content') or {}
+                is_new_format = bool(content)
+
+                uuid = item.get('id') or item.get('uuid', '')
+                if not uuid:
+                    continue
+                if uuid in seen_uuids:
+                    continue
+                seen_uuids.add(uuid)
+
+                if is_new_format:
+                    title     = content.get('title', '')
+                    publisher = (content.get('provider') or {}).get('displayName', '')
+                    link      = ((content.get('canonicalUrl') or {}).get('url')
+                                 or content.get('previewUrl', ''))
+                    # pubDate is ISO string e.g. "2026-03-25T05:30:00Z"
+                    pub_str   = content.get('pubDate', '') or content.get('displayTime', '')
+                    try:
+                        import datetime
+                        publish_time = int(datetime.datetime.fromisoformat(
+                            pub_str.replace('Z', '+00:00')).timestamp()) if pub_str else 0
+                    except Exception:
+                        publish_time = 0
+
+                    # Thumbnail
+                    thumb_obj   = content.get('thumbnail') or {}
+                    resolutions = thumb_obj.get('resolutions') or []
+                    thumbnail   = (resolutions[0].get('url') if resolutions
+                                   else thumb_obj.get('originalUrl', ''))
+
+                    related = item.get('relatedTickers') or []
+                else:
+                    # Old flat format
+                    title        = item.get('title', '')
+                    publisher    = item.get('publisher', '')
+                    link         = item.get('link', '')
+                    publish_time = item.get('providerPublishTime', 0)
+                    thumb_data   = item.get('thumbnail') or {}
+                    resolutions  = thumb_data.get('resolutions') or []
+                    thumbnail    = resolutions[0].get('url', '') if resolutions else ''
+                    related      = item.get('relatedTickers', [])
+
+                news_items.append({
+                    'uuid':            uuid,
+                    'title':           title,
+                    'publisher':       publisher,
+                    'link':            link,
+                    'publish_time':    publish_time,
+                    'related_tickers': related,
+                    'thumbnail':       thumbnail,
+                    'source_ticker':   ticker,
+                })
+        except Exception:
+            continue
+
+    # Sort newest-first
+    news_items.sort(key=lambda x: x['publish_time'], reverse=True)
+
+    # Add human-readable relative time
+    now_ts = _time.time()
+    for item in news_items:
+        pt = item['publish_time']
+        if pt:
+            age = now_ts - pt
+            if age < 3600:
+                item['time_label'] = f"{int(age / 60)}m ago"
+            elif age < 86400:
+                item['time_label'] = f"{int(age / 3600)}h ago"
+            else:
+                item['time_label'] = f"{int(age / 86400)}d ago"
+        else:
+            item['time_label'] = ''
+
+    # Flag pre-market news: published after midnight ET but before 9:30 AM ET today
+    eastern_now = pd.Timestamp.now(tz='US/Eastern')
+    midnight_et  = eastern_now.normalize().timestamp()
+    open_et      = eastern_now.normalize().replace(hour=9, minute=30).timestamp()
+    for item in news_items:
+        pt = item['publish_time']
+        item['is_premarket'] = bool(pt and midnight_et <= pt < open_et)
+
+    return jsonify({'news': news_items[:60]}), 200
+
+
 if __name__ == '__main__':
     import os
-    port = int(os.environ.get('PORT', 5002))
+    port = int(os.environ.get('PORT', 5003))
     app.run(debug=True, threaded=True, port=port, host='0.0.0.0')

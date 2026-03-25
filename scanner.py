@@ -3,6 +3,7 @@ import numpy as np
 import yfinance as yf
 import time
 import io
+import json
 import urllib.request
 
 
@@ -23,21 +24,58 @@ def get_sp500_tickers():
     })
 
 
+def get_all_nasdaq_tickers():
+    """
+    Fetch all NASDAQ-listed stocks from NASDAQ's screener API (returns JSON).
+    Returns a DataFrame with columns: ticker, name, sector.
+    """
+    url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&exchange=NASDAQ&download=true"
+    req = urllib.request.Request(url, headers={
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'application/json',
+    })
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        content = resp.read().decode('utf-8')
+
+    data = json.loads(content)
+    rows = data.get('data', {}).get('rows', [])
+
+    if not rows:
+        return pd.DataFrame(columns=['ticker', 'name', 'sector'])
+
+    result = pd.DataFrame({
+        'ticker': [r.get('symbol', '').strip() for r in rows],
+        'name':   [r.get('name', '').strip() for r in rows],
+        'sector': [r.get('sector', 'N/A').strip() for r in rows],
+    })
+
+    # Keep only clean ticker symbols (1-5 uppercase letters, optional class suffix)
+    result = result[
+        result['ticker'].str.match(r'^[A-Z]{1,5}(-[A-Z])?$')
+    ].reset_index(drop=True)
+
+    return result
+
+
 ##############################################################################
 # Bullish Pattern Detection
 ##############################################################################
 
-def detect_patterns(ohlc_df):
+def detect_patterns(ohlc_df, market_close=None):
     """
-    Detect bullish chart patterns from a DataFrame with Open, High, Low, Close columns.
+    Detect bullish chart patterns and pre-breakout signals.
+    DataFrame must have Open, High, Low, Close columns; Volume is optional but used when present.
+    market_close: optional Series of S&P 500 daily closes for Relative Strength calculation.
     Returns a list of pattern name strings found.
     """
     if ohlc_df is None or len(ohlc_df) < 10:
         return []
 
     patterns = []
+    close = ohlc_df['Close']
 
-    if _is_golden_cross(ohlc_df['Close']):
+    # ── Classic chart patterns ──────────────────────────────────────────────
+    if _is_golden_cross(close):
         patterns.append('Golden Cross')
 
     if _is_bullish_engulfing(ohlc_df):
@@ -49,11 +87,30 @@ def detect_patterns(ohlc_df):
     if _is_morning_star(ohlc_df):
         patterns.append('Morning Star')
 
-    if _is_double_bottom(ohlc_df['Close']):
+    if _is_double_bottom(close):
         patterns.append('Double Bottom')
 
-    if _is_cup_and_handle(ohlc_df['Close']):
+    if _is_cup_and_handle(close):
         patterns.append('Cup & Handle')
+
+    # ── Pre-breakout signals ────────────────────────────────────────────────
+    if _is_bollinger_squeeze(close):
+        patterns.append('BB Squeeze')
+
+    if 'Volume' in ohlc_df.columns and _is_volume_surge(ohlc_df):
+        patterns.append('Volume Surge')
+
+    if _is_tight_consolidation(close):
+        patterns.append('Tight Base')
+
+    if _is_near_52week_high(close):
+        patterns.append('Near 52W High')
+
+    if _is_macd_bullish_crossover(close):
+        patterns.append('MACD Cross')
+
+    if market_close is not None and _is_relative_strength(close, market_close):
+        patterns.append('RS Leader')
 
     return patterns
 
@@ -328,24 +385,152 @@ def _is_cup_and_handle(close):
     return False
 
 
+##############################################################################
+# Pre-Breakout Signal Detectors
+##############################################################################
+
+def _is_bollinger_squeeze(close):
+    """
+    Bollinger Band Squeeze: bands are significantly narrower than their 6-month average.
+    Low volatility (tight coil) almost always precedes a large directional move.
+    """
+    if len(close) < 30:
+        return False
+
+    period = 20
+    rolling_mean = close.rolling(period).mean()
+    rolling_std  = close.rolling(period).std()
+
+    # Normalised band-width = (Upper - Lower) / Middle
+    band_width = ((rolling_mean + 2 * rolling_std) - (rolling_mean - 2 * rolling_std)) / rolling_mean
+    band_width = band_width.dropna()
+
+    if len(band_width) < 20:
+        return False
+
+    current_bw = band_width.iloc[-1]
+    # Compare against last 126 trading days (~6 months)
+    lookback_bw = band_width.iloc[-126:] if len(band_width) >= 126 else band_width
+    avg_bw = lookback_bw.mean()
+
+    # Squeeze: current width is less than 50 % of the recent average
+    return current_bw > 0 and current_bw < avg_bw * 0.50
+
+
+def _is_volume_surge(ohlc):
+    """
+    Volume Surge: today's volume ≥ 2× the 20-day average AND the candle is green.
+    Signals institutional accumulation / demand entering the stock.
+    """
+    if 'Volume' not in ohlc.columns or len(ohlc) < 25:
+        return False
+
+    vol   = ohlc['Volume'].fillna(0)
+    close = ohlc['Close']
+    open_ = ohlc['Open']
+
+    avg_vol = vol.iloc[-21:-1].mean()
+    if avg_vol == 0:
+        return False
+
+    current_vol   = vol.iloc[-1]
+    current_close = close.iloc[-1]
+    current_open  = open_.iloc[-1]
+
+    return (current_vol >= avg_vol * 2.0) and (current_close > current_open)
+
+
+def _is_tight_consolidation(close):
+    """
+    Tight Consolidation / Flat Base: price range < 5 % over the last 10 trading days.
+    Stock is coiling energy before a potential breakout.
+    """
+    if len(close) < 10:
+        return False
+
+    recent = close.iloc[-10:]
+    low    = recent.min()
+    if low == 0:
+        return False
+
+    range_pct = (recent.max() - low) / low * 100
+    return range_pct < 5.0
+
+
+def _is_near_52week_high(close):
+    """
+    Near 52-Week High: price is within 3 % below its 52-week high.
+    Breakouts from prior highs into new highs generate the biggest momentum runs.
+    """
+    if len(close) < 50:
+        return False
+
+    lookback   = min(252, len(close))
+    year_high  = close.iloc[-lookback:].max()
+    current    = close.iloc[-1]
+
+    if year_high == 0:
+        return False
+
+    pct_below = (year_high - current) / year_high * 100
+    return pct_below <= 3.0
+
+
+def _is_macd_bullish_crossover(close):
+    """
+    MACD Bullish Crossover: MACD line crossed above the signal line within the last 5 bars.
+    A momentum shift that often precedes a sustained upswing.
+    """
+    if len(close) < 35:
+        return False
+
+    ema12       = close.ewm(span=12, adjust=False).mean()
+    ema26       = close.ewm(span=26, adjust=False).mean()
+    macd_line   = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+
+    for i in range(-5, 0):
+        if (macd_line.iloc[i]     > signal_line.iloc[i] and
+                macd_line.iloc[i - 1] <= signal_line.iloc[i - 1]):
+            return True
+    return False
+
+
+def _is_relative_strength(close, market_close):
+    """
+    Relative Strength Leader: stock outperforms the S&P 500 by ≥ 5 pp over 3 months (63 days).
+    RS leaders attract institutional buying and tend to continue outperforming.
+    """
+    if len(close) < 63 or market_close is None or len(market_close) < 63:
+        return False
+
+    stock_return  = (close.iloc[-1]        / close.iloc[-63]        - 1) * 100
+    market_return = (market_close.iloc[-1] / market_close.iloc[-63] - 1) * 100
+
+    return stock_return > market_return + 5.0
+
+
 def _extract_ohlc(data, ticker, tickers):
-    """Extract OHLC DataFrame for a single ticker from batch download data."""
+    """Extract OHLC + Volume DataFrame for a single ticker from batch download data."""
     try:
         if len(tickers) == 1:
             ohlc = pd.DataFrame({
-                'Open': data['Open'],
-                'High': data['High'],
-                'Low': data['Low'],
-                'Close': data['Close'],
+                'Open':   data['Open'],
+                'High':   data['High'],
+                'Low':    data['Low'],
+                'Close':  data['Close'],
+                'Volume': data['Volume'],
             })
         else:
             ohlc = pd.DataFrame({
-                'Open': data[(ticker, 'Open')],
-                'High': data[(ticker, 'High')],
-                'Low': data[(ticker, 'Low')],
-                'Close': data[(ticker, 'Close')],
+                'Open':   data[(ticker, 'Open')],
+                'High':   data[(ticker, 'High')],
+                'Low':    data[(ticker, 'Low')],
+                'Close':  data[(ticker, 'Close')],
+                'Volume': data[(ticker, 'Volume')],
             })
-        return ohlc.dropna()
+        # Only drop rows where price data is missing; keep zero-volume rows
+        return ohlc.dropna(subset=['Open', 'High', 'Low', 'Close'])
     except (KeyError, TypeError):
         return None
 
@@ -358,12 +543,13 @@ def scan_for_sma_proximity(tickers, threshold_pct=5.0, sma_period=150, progress_
     Returns list of dicts: ticker, current_price, sma_value, distance_pct
     """
     if progress_callback:
-        progress_callback('download', 0, 1, 'Downloading price data for all S&P 500 stocks...')
+        progress_callback('download', 0, 1, 'Downloading price data...')
 
-    # Need enough trading days for the SMA period
-    # 200 days needs ~1y, shorter periods still benefit from 1y of data
+    # Include SPY for Relative Strength calculation (add only if not already present)
+    tickers_dl = tickers if 'SPY' in tickers else list(tickers) + ['SPY']
+
     data = yf.download(
-        tickers=tickers,
+        tickers=tickers_dl,
         period='1y',
         interval='1d',
         group_by='ticker',
@@ -374,6 +560,16 @@ def scan_for_sma_proximity(tickers, threshold_pct=5.0, sma_period=150, progress_
     if progress_callback:
         progress_callback('download', 1, 1, 'Price data downloaded.')
 
+    # Extract SPY closes for Relative Strength comparisons
+    market_close = None
+    try:
+        if len(tickers_dl) == 1:
+            market_close = data['Close'].dropna()
+        else:
+            market_close = data[('SPY', 'Close')].dropna()
+    except (KeyError, TypeError):
+        market_close = None
+
     results = []
     total = len(tickers)
 
@@ -382,7 +578,7 @@ def scan_for_sma_proximity(tickers, threshold_pct=5.0, sma_period=150, progress_
             progress_callback('sma_calc', i, total, f'Calculating SMA ({i}/{total})...')
 
         try:
-            if len(tickers) == 1:
+            if len(tickers_dl) == 1:
                 close = data['Close']
             else:
                 close = data[(ticker, 'Close')]
@@ -397,9 +593,9 @@ def scan_for_sma_proximity(tickers, threshold_pct=5.0, sma_period=150, progress_
             distance_pct = ((current_price - sma_value) / sma_value) * 100
 
             if abs(distance_pct) <= threshold_pct:
-                # Detect bullish patterns from OHLC data
-                ohlc = _extract_ohlc(data, ticker, tickers)
-                patterns = detect_patterns(ohlc) if ohlc is not None else []
+                # Detect classic patterns + pre-breakout signals
+                ohlc = _extract_ohlc(data, ticker, tickers_dl)
+                patterns = detect_patterns(ohlc, market_close) if ohlc is not None else []
 
                 results.append({
                     'ticker': ticker,
@@ -508,21 +704,30 @@ def fetch_financials(ticker_symbol):
 def run_full_scan(threshold_pct=5.0, sma_period=150, progress_callback=None):
     """
     Full scan pipeline:
-    1. Fetch S&P 500 ticker list
+    1. Fetch S&P 500 + all NASDAQ ticker lists
     2. Batch download prices, compute SMA, filter
     3. Fetch financials for matching stocks
     """
     # Stage 1: Get tickers
     if progress_callback:
-        progress_callback('init', 0, 1, 'Fetching S&P 500 ticker list...')
+        progress_callback('init', 0, 1, 'Fetching S&P 500 + NASDAQ ticker lists...')
 
     sp500_df = get_sp500_tickers()
-    ticker_list = sp500_df['ticker'].tolist()
-    ticker_to_name = dict(zip(sp500_df['ticker'], sp500_df['name']))
-    ticker_to_sector = dict(zip(sp500_df['ticker'], sp500_df['sector']))
+
+    try:
+        nasdaq_df = get_all_nasdaq_tickers()
+    except Exception:
+        nasdaq_df = pd.DataFrame(columns=['ticker', 'name', 'sector'])
+
+    combined_df = pd.concat([sp500_df, nasdaq_df], ignore_index=True)
+    combined_df = combined_df.drop_duplicates(subset='ticker', keep='first')
+
+    ticker_list = combined_df['ticker'].tolist()
+    ticker_to_name = dict(zip(combined_df['ticker'], combined_df['name']))
+    ticker_to_sector = dict(zip(combined_df['ticker'], combined_df['sector']))
 
     if progress_callback:
-        progress_callback('init', 1, 1, f'Found {len(ticker_list)} tickers.')
+        progress_callback('init', 1, 1, f'Found {len(ticker_list)} tickers (S&P 500 + NASDAQ).')
 
     # Stage 2: SMA scan
     matches = scan_for_sma_proximity(ticker_list, threshold_pct, sma_period, progress_callback)

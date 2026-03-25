@@ -164,6 +164,10 @@ main {
 
 .table-controls {
     margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
 }
 
 #filter-input {
@@ -347,10 +351,75 @@ thead th.trend-header:hover {
     white-space: nowrap;
 }
 
+/* 🔥 Pre-breakout fire signals */
+.pattern-badge.signal-hot {
+    background: rgba(230, 81, 0, 0.12);
+    color: #e65100;
+    border-color: rgba(230, 81, 0, 0.4);
+    box-shadow: 0 0 6px rgba(230, 81, 0, 0.15);
+}
+
+/* Tooltip on hover */
+.pattern-badge.has-tooltip {
+    cursor: help;
+    position: relative;
+}
+
+.pattern-badge.has-tooltip::after {
+    content: attr(title);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1a1a2e;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 0.4rem 0.7rem;
+    border-radius: 6px;
+    white-space: normal;
+    width: 220px;
+    text-align: center;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+    z-index: 100;
+    line-height: 1.4;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.pattern-badge.has-tooltip:hover::after {
+    opacity: 1;
+}
+
 .no-pattern {
     color: #bbb;
     font-size: 0.78rem;
     text-align: center !important;
+}
+
+/* Signals-only filter button */
+.signals-filter-btn {
+    padding: 0.45rem 1rem;
+    border-radius: 8px;
+    border: 1.5px solid rgba(230, 81, 0, 0.5);
+    background: transparent;
+    color: #e65100;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.signals-filter-btn:hover {
+    background: rgba(230, 81, 0, 0.08);
+}
+
+.signals-filter-btn.active {
+    background: rgba(230, 81, 0, 0.15);
+    border-color: #e65100;
+    box-shadow: 0 0 8px rgba(230, 81, 0, 0.2);
 }
 
 /* Pattern detail page grid */
@@ -539,6 +608,304 @@ tbody tr {
     display: none;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   Tab Navigation
+═══════════════════════════════════════════════════════════════════════════ */
+.tab-nav {
+    background: #16213e;
+    display: flex;
+    gap: 0;
+    padding: 0 1.5rem;
+    border-bottom: 2px solid #0f3460;
+}
+
+.tab-btn {
+    position: relative;
+    background: transparent;
+    color: rgba(255,255,255,0.6);
+    border: none;
+    padding: 0.85rem 1.5rem;
+    cursor: pointer;
+    font-size: 0.95rem;
+    font-weight: 600;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: color 0.2s, border-color 0.2s;
+    letter-spacing: 0.02em;
+}
+
+.tab-btn:hover {
+    color: rgba(255,255,255,0.9);
+}
+
+.tab-btn.active {
+    color: #ffffff;
+    border-bottom-color: #4361ee;
+}
+
+.tab-panel {
+    /* shown/hidden via .hidden */
+}
+
+/* Red dot indicator on News tab */
+.news-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ef4444;
+    position: absolute;
+    top: 10px;
+    right: 8px;
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.4; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Breaking News Tab
+═══════════════════════════════════════════════════════════════════════════ */
+#news-controls {
+    background: white;
+    padding: 1.5rem 2rem;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    margin-bottom: 1rem;
+}
+
+.news-search-row {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+#news-ticker-input {
+    flex: 1;
+    min-width: 200px;
+    padding: 0.6rem 1rem;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    transition: border-color 0.2s;
+}
+
+#news-ticker-input:focus {
+    outline: none;
+    border-color: #4361ee;
+}
+
+#news-load-btn {
+    background: #4361ee;
+    color: white;
+    border: none;
+    padding: 0.6rem 1.5rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: background 0.2s;
+    white-space: nowrap;
+}
+
+#news-load-btn:hover   { background: #3651d4; }
+#news-load-btn:disabled { background: #aaa; cursor: not-allowed; }
+
+.secondary-btn {
+    background: white;
+    color: #4361ee;
+    border: 2px solid #4361ee;
+    padding: 0.6rem 1.2rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.secondary-btn:hover {
+    background: #4361ee;
+    color: white;
+}
+
+/* Status bar */
+.news-status {
+    font-size: 0.82rem;
+    padding: 0.4rem 0.8rem;
+    border-radius: 6px;
+    margin-top: 0.5rem;
+}
+
+.news-status-info  { background: #e8f0fe; color: #1d4ed8; }
+.news-status-ok    { background: #dcfce7; color: #166534; }
+.news-status-warn  { background: #fef3c7; color: #92400e; }
+.news-status-error { background: #fee2e2; color: #991b1b; }
+
+/* Empty state */
+.news-empty {
+    text-align: center;
+    padding: 4rem 2rem;
+    color: #888;
+}
+
+.news-empty-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+}
+
+.news-empty p {
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+}
+
+/* Section headers inside news feed */
+.news-section-header {
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #555;
+    padding: 1.2rem 0 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.premarket-header {
+    color: #d97706;
+}
+
+/* News cards grid */
+#news-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    gap: 0.85rem;
+}
+
+/* Individual card */
+.news-card {
+    background: white;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    overflow: hidden;
+    transition: transform 0.15s, box-shadow 0.15s;
+    border-left: 4px solid transparent;
+}
+
+.news-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+}
+
+.news-premarket {
+    border-left-color: #f59e0b;
+    background: linear-gradient(135deg, #fffbeb 0%, #ffffff 40%);
+}
+
+.news-card-inner {
+    display: flex;
+    gap: 0;
+}
+
+.news-thumb {
+    width: 100px;
+    min-width: 100px;
+    height: 80px;
+    object-fit: cover;
+    border-radius: 0;
+    flex-shrink: 0;
+}
+
+.news-card-body {
+    padding: 0.8rem 1rem;
+    flex: 1;
+    min-width: 0;
+}
+
+.news-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.35rem;
+}
+
+.premarket-badge {
+    background: #f59e0b;
+    color: white;
+    font-size: 0.62rem;
+    font-weight: 800;
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    letter-spacing: 0.06em;
+}
+
+.premarket-badge-big {
+    background: #f59e0b;
+    color: white;
+    font-size: 0.72rem;
+    font-weight: 800;
+    padding: 0.2rem 0.6rem;
+    border-radius: 5px;
+    letter-spacing: 0.06em;
+}
+
+.news-time {
+    font-size: 0.75rem;
+    color: #888;
+    font-weight: 600;
+}
+
+.news-publisher {
+    font-size: 0.72rem;
+    color: #aaa;
+}
+
+.news-title {
+    display: block;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: #1a1a2e;
+    text-decoration: none;
+    line-height: 1.4;
+    margin-bottom: 0.4rem;
+    /* Clamp to 3 lines */
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.news-title:hover {
+    color: #4361ee;
+    text-decoration: underline;
+}
+
+.news-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+}
+
+.news-ticker-tag {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0.1rem 0.45rem;
+    background: #e8f0fe;
+    color: #3651d4;
+    border-radius: 4px;
+    letter-spacing: 0.03em;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Responsive
+═══════════════════════════════════════════════════════════════════════════ */
 /* Responsive */
 @media (max-width: 768px) {
     main {

@@ -1,4 +1,148 @@
 document.addEventListener('DOMContentLoaded', () => {
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Tab Navigation
+    // ──────────────────────────────────────────────────────────────────────
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = btn.dataset.tab;
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+            btn.classList.add('active');
+            document.getElementById(`tab-${target}`).classList.remove('hidden');
+            if (target === 'news') {
+                document.getElementById('news-dot').classList.add('hidden');
+            }
+        });
+    });
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Breaking News Tab
+    // ──────────────────────────────────────────────────────────────────────
+    const newsTickerInput = document.getElementById('news-ticker-input');
+    const newsLoadBtn     = document.getElementById('news-load-btn');
+    const newsScanBtn     = document.getElementById('news-scan-btn');
+    const newsStatus      = document.getElementById('news-status');
+    const newsCards       = document.getElementById('news-cards');
+    const newsEmpty       = document.getElementById('news-empty');
+
+    let newsRefreshTimer = null;
+
+    newsLoadBtn.addEventListener('click', () => {
+        const raw = newsTickerInput.value.trim();
+        const tickers = raw ? raw.split(/[,\s]+/).map(t => t.toUpperCase()).filter(Boolean) : [];
+        fetchNews(tickers);
+    });
+
+    newsScanBtn.addEventListener('click', () => {
+        // Use tickers from scan results
+        const scanTickers = allResults.slice(0, 15).map(r => r.ticker);
+        if (scanTickers.length === 0) {
+            showNewsStatus('No scan results yet — run a scan first.', 'warn');
+            return;
+        }
+        newsTickerInput.value = scanTickers.join(', ');
+        fetchNews(scanTickers);
+    });
+
+    async function fetchNews(tickers = []) {
+        newsLoadBtn.disabled = true;
+        newsLoadBtn.textContent = 'Loading...';
+        showNewsStatus('Fetching news...', 'info');
+
+        const param = tickers.length ? `?tickers=${tickers.join(',')}` : '';
+        try {
+            const resp = await fetch(`/api/news${param}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            renderNews(data.news || []);
+
+            const count = (data.news || []).length;
+            showNewsStatus(`Loaded ${count} articles · auto-refreshes every 5 min`, 'ok');
+
+            // Auto-refresh every 5 minutes
+            clearInterval(newsRefreshTimer);
+            newsRefreshTimer = setInterval(() => fetchNews(tickers), 5 * 60 * 1000);
+        } catch (e) {
+            showNewsStatus(`Error: ${e.message}`, 'error');
+        } finally {
+            newsLoadBtn.disabled = false;
+            newsLoadBtn.textContent = 'Load News';
+        }
+    }
+
+    function renderNews(items) {
+        if (!items.length) {
+            newsCards.classList.add('hidden');
+            newsEmpty.classList.remove('hidden');
+            return;
+        }
+
+        newsEmpty.classList.add('hidden');
+        newsCards.classList.remove('hidden');
+        newsCards.innerHTML = '';
+
+        // Group pre-market first
+        const premarket = items.filter(n => n.is_premarket);
+        const rest      = items.filter(n => !n.is_premarket);
+
+        if (premarket.length) {
+            const header = document.createElement('div');
+            header.className = 'news-section-header premarket-header';
+            header.innerHTML = '<span class="premarket-badge-big">PRE-MARKET</span> Breaking Before The Bell';
+            newsCards.appendChild(header);
+            premarket.forEach(n => newsCards.appendChild(createNewsCard(n, true)));
+
+            const divider = document.createElement('div');
+            divider.className = 'news-section-header';
+            divider.textContent = 'Recent Market News';
+            newsCards.appendChild(divider);
+        }
+
+        rest.forEach(n => newsCards.appendChild(createNewsCard(n, false)));
+    }
+
+    function createNewsCard(item, isPremarket) {
+        const card = document.createElement('div');
+        card.className = `news-card${isPremarket ? ' news-premarket' : ''}`;
+
+        // Ticker tags
+        const tickers = [...new Set([item.source_ticker, ...(item.related_tickers || [])])].slice(0, 5);
+        const tagsHtml = tickers.map(t =>
+            `<span class="news-ticker-tag">${t}</span>`
+        ).join('');
+
+        // Thumbnail
+        const thumbHtml = item.thumbnail
+            ? `<img class="news-thumb" src="${item.thumbnail}" alt="" loading="lazy">`
+            : '';
+
+        card.innerHTML = `
+            <div class="news-card-inner">
+                ${thumbHtml}
+                <div class="news-card-body">
+                    <div class="news-meta">
+                        ${isPremarket ? '<span class="premarket-badge">PRE-MARKET</span>' : ''}
+                        <span class="news-time">${item.time_label}</span>
+                        <span class="news-publisher">${item.publisher}</span>
+                    </div>
+                    <a href="${item.link}" target="_blank" rel="noopener" class="news-title">${item.title}</a>
+                    <div class="news-tags">${tagsHtml}</div>
+                </div>
+            </div>`;
+
+        return card;
+    }
+
+    function showNewsStatus(msg, type) {
+        newsStatus.textContent = msg;
+        newsStatus.className = `news-status news-status-${type}`;
+        newsStatus.classList.remove('hidden');
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Scanner Tab (existing logic below)
+    // ──────────────────────────────────────────────────────────────────────
     const thresholdSlider = document.getElementById('threshold');
     const thresholdValue = document.getElementById('threshold-value');
     const scanBtn = document.getElementById('scan-btn');
@@ -8,6 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultsSection = document.getElementById('results');
     const resultsSummary = document.getElementById('results-summary');
     const filterInput = document.getElementById('filter-input');
+    const signalsFilterBtn = document.getElementById('signals-filter-btn');
 
     const smaPeriodSelect = document.getElementById('sma-period');
 
@@ -17,6 +162,26 @@ document.addEventListener('DOMContentLoaded', () => {
     let tableInitialized = false;
     let streamingFiscalYears = [];
     let userSorted = false;  // track if user clicked a sort header
+    let signalsFilterActive = false;
+
+    // Pre-breakout fire signals — shown in orange with explanations
+    const BREAKOUT_SIGNALS = {
+        'BB Squeeze':    'Bollinger Band squeeze: volatility is contracting — a big move is loading',
+        'Volume Surge':  'Volume 2×+ above average: unusual accumulation, smart money may be entering',
+        'Tight Base':    'Tight consolidation (<3% range over 10 days): coiled spring before a breakout',
+        'Near 52W High': 'Within 5% of 52-week high: strong momentum, potential breakout to new highs',
+        'MACD Cross':    'MACD bullish crossover: momentum shifted to the upside',
+        'RS Leader':     'Outperforming S&P 500 over the last 3 months: market leader',
+    };
+    // Classic candle/chart patterns — shown in green
+    const CLASSIC_PATTERNS = {
+        'Golden Cross':      '50-day SMA crossed above 200-day SMA in the last 10 days',
+        'Bullish Engulfing': 'Large green candle fully engulfed the previous red candle',
+        'Hammer':            'Long lower wick with small body — reversal signal after a decline',
+        'Morning Star':      '3-candle reversal pattern: red → small doji → strong green',
+        'Double Bottom':     'Price bounced twice from the same support level',
+        'Cup & Handle':      'Rounded base followed by a small consolidation — classic breakout setup',
+    };
 
     const financialMetrics = [
         { key: 'revenue', label: 'Revenue' },
@@ -87,7 +252,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function resetScanBtn() {
         scanBtn.disabled = false;
-        scanBtn.textContent = 'Scan S&P 500';
+        scanBtn.textContent = 'Scan Now';
     }
 
     function listenForProgress() {
@@ -118,6 +283,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.stage === 'done' || data.stage === 'error') {
                 evtSource.close();
                 resetScanBtn();
+
+                // Show a dot on the News tab so user knows scan results are ready
+                if (data.stage === 'done' && allResults.length > 0) {
+                    document.getElementById('news-dot').classList.remove('hidden');
+                }
 
                 if (data.stage === 'done' && allResults.length === 0) {
                     resultsSection.classList.remove('hidden');
@@ -321,14 +491,25 @@ document.addEventListener('DOMContentLoaded', () => {
         tdDist.className = stock.distance_pct >= 0 ? 'positive' : 'negative';
         tr.appendChild(tdDist);
 
-        // Patterns
+        // Patterns — fire signals (orange) first, then classic patterns (green)
         const tdPatterns = document.createElement('td');
         const patterns = stock.patterns || [];
         if (patterns.length > 0) {
-            patterns.forEach(p => {
+            // Sort: breakout signals first
+            const sorted = [
+                ...patterns.filter(p => BREAKOUT_SIGNALS[p]),
+                ...patterns.filter(p => !BREAKOUT_SIGNALS[p]),
+            ];
+            sorted.forEach(p => {
+                const isHot = !!BREAKOUT_SIGNALS[p];
+                const tooltip = BREAKOUT_SIGNALS[p] || CLASSIC_PATTERNS[p] || '';
                 const badge = document.createElement('span');
-                badge.className = 'pattern-badge';
-                badge.textContent = p;
+                badge.className = isHot ? 'pattern-badge signal-hot' : 'pattern-badge';
+                badge.textContent = isHot ? `🔥 ${p}` : p;
+                if (tooltip) {
+                    badge.title = tooltip;
+                    badge.classList.add('has-tooltip');
+                }
                 tdPatterns.appendChild(badge);
             });
         } else {
@@ -590,18 +771,37 @@ document.addEventListener('DOMContentLoaded', () => {
         buildFullTable(sorted);
     }
 
-    // Filter
-    filterInput.addEventListener('input', (e) => {
-        const query = e.target.value.toLowerCase();
-        if (!query) {
-            buildFullTable(allResults);
-            return;
+    function applyFilters() {
+        const query = filterInput.value.toLowerCase();
+        let filtered = allResults;
+
+        if (signalsFilterActive) {
+            filtered = filtered.filter(r =>
+                (r.patterns || []).some(p => BREAKOUT_SIGNALS[p])
+            );
         }
-        const filtered = allResults.filter(r =>
-            r.ticker.toLowerCase().includes(query) ||
-            (r.name || '').toLowerCase().includes(query) ||
-            (r.sector || '').toLowerCase().includes(query)
-        );
+
+        if (query) {
+            filtered = filtered.filter(r =>
+                r.ticker.toLowerCase().includes(query) ||
+                (r.name || '').toLowerCase().includes(query) ||
+                (r.sector || '').toLowerCase().includes(query)
+            );
+        }
+
         buildFullTable(filtered);
+    }
+
+    // Text filter
+    filterInput.addEventListener('input', applyFilters);
+
+    // Signals-only toggle
+    signalsFilterBtn.addEventListener('click', () => {
+        signalsFilterActive = !signalsFilterActive;
+        signalsFilterBtn.classList.toggle('active', signalsFilterActive);
+        signalsFilterBtn.textContent = signalsFilterActive
+            ? '🔥 Showing Breakout Signals Only'
+            : '🔥 Breakout Signals Only';
+        applyFilters();
     });
 });
