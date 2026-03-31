@@ -593,6 +593,175 @@ def get_news():
     return jsonify({'news': news_items[:60]}), 200
 
 
+@app.route('/api/gap-scanner/stream')
+def gap_scanner_stream():
+    """
+    SSE endpoint: streams gap stocks as each batch is downloaded.
+    Yields: init → progress (per batch) → stock (per gap stock) → done
+    """
+    import yfinance as yf
+    import pandas as pd
+    import gc
+
+    min_gap = float(request.args.get('min_gap', 1.5))
+    max_cards = int(request.args.get('limit', 25))
+
+    def generate():
+        try:
+            yield f"data: {json.dumps({'stage': 'init', 'message': 'Fetching ticker list...'})}\n\n"
+
+            sp500_df = get_sp500_tickers()
+            try:
+                nasdaq_df = get_all_nasdaq_tickers()
+            except Exception:
+                nasdaq_df = pd.DataFrame(columns=['ticker', 'name', 'sector'])
+
+            combined_df = pd.concat([sp500_df, nasdaq_df], ignore_index=True)
+            combined_df = combined_df.drop_duplicates(subset='ticker', keep='first')
+            tickers = combined_df['ticker'].tolist()
+            ticker_to_name   = dict(zip(combined_df['ticker'], combined_df['name']))
+            ticker_to_sector = dict(zip(combined_df['ticker'], combined_df['sector']))
+
+            total = len(tickers)
+            yield f"data: {json.dumps({'stage': 'init', 'message': f'Downloading prices for {total} stocks...', 'total': total})}\n\n"
+
+            batch_size = 500
+            for batch_start in range(0, total, batch_size):
+                batch = tickers[batch_start:batch_start + batch_size]
+                try:
+                    df = yf.download(batch, period='1mo', interval='1d',
+                                     progress=False, threads=True)
+                except Exception:
+                    continue
+
+                if df is None or len(df) == 0:
+                    continue
+
+                for ticker in batch:
+                    try:
+                        if len(batch) == 1:
+                            if isinstance(df.columns, pd.MultiIndex):
+                                df.columns = df.columns.get_level_values(0)
+                            close_s = df['Close'].dropna()
+                            high_s  = df['High'].dropna()
+                            vol_s   = df['Volume']
+                        else:
+                            close_s = df['Close'][ticker].dropna()
+                            high_s  = df['High'][ticker].dropna()
+                            vol_s   = df['Volume'][ticker]
+
+                        if len(close_s) < 2:
+                            continue
+
+                        current = round(float(close_s.iloc[-1]), 2)
+                        prev    = round(float(close_s.iloc[-2]), 2)
+                        if prev == 0:
+                            continue
+                        change     = round(current - prev, 2)
+                        change_pct = round((change / prev) * 100, 2)
+                        volume     = int(vol_s.iloc[-1]) if pd.notna(vol_s.iloc[-1]) else 0
+
+                        # Resistance: max high of all bars except today
+                        resistance = None
+                        near_resistance = False
+                        broke_resistance = False
+                        pct_to_resistance = None
+                        if len(high_s) >= 5:
+                            resistance = round(float(high_s.iloc[:-1].max()), 2)
+                            if resistance > 0:
+                                pct_to_resistance = round((resistance - current) / resistance * 100, 2)
+                                near_resistance   = 0 < pct_to_resistance <= 5   # within 5% below roof
+                                broke_resistance  = current > resistance          # broke above today
+
+                        # RVOL: today volume vs avg of prior bars
+                        rvol = None
+                        vol_hist = vol_s.iloc[:-1].dropna()
+                        if len(vol_hist) >= 5 and volume > 0:
+                            avg_vol = float(vol_hist.mean())
+                            if avg_vol > 0:
+                                rvol = round(volume / avg_vol, 2)
+
+                        if abs(change_pct) >= min_gap:
+                            stock = {
+                                'ticker':           ticker,
+                                'name':             ticker_to_name.get(ticker, ticker),
+                                'sector':           ticker_to_sector.get(ticker, ''),
+                                'price':            current,
+                                'previous_close':   prev,
+                                'change':           change,
+                                'change_pct':       change_pct,
+                                'volume':           volume,
+                                'resistance':       resistance,
+                                'pct_to_resistance': pct_to_resistance,
+                                'near_resistance':  near_resistance,
+                                'broke_resistance': broke_resistance,
+                                'rvol':             rvol,
+                            }
+                            yield f"data: {json.dumps({'stage': 'stock', 'stock': stock})}\n\n"
+                    except Exception:
+                        continue
+
+                del df
+                gc.collect()
+
+                processed = min(batch_start + batch_size, total)
+                yield f"data: {json.dumps({'stage': 'progress', 'processed': processed, 'total': total, 'message': f'Scanned {processed:,}/{total:,} stocks...'})}\n\n"
+
+            yield f"data: {json.dumps({'stage': 'done', 'message': 'Gap scan complete!'})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'stage': 'error', 'message': str(e)})}\n\n"
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
+@app.route('/api/gap-scanner')
+def gap_scanner():
+    """
+    Return top gainers and losers from the cached all-stocks data.
+    Optionally filter by minimum absolute gap %.
+    """
+    import time as _time
+
+    limit = min(int(request.args.get('limit', 25)), 50)
+    min_gap = float(request.args.get('min_gap', 1.5))
+
+    cache = _all_stocks_cache
+    if cache['data'] is None:
+        return jsonify({
+            'gainers': [], 'losers': [],
+            'total_gainers': 0, 'total_losers': 0,
+            'cached': False,
+            'message': 'No stock data cached yet. Trigger /api/stocks/all first.',
+        }), 200
+
+    all_s = cache['data'].get('stocks', [])
+
+    gainers = sorted(
+        [s for s in all_s if s.get('change_pct', 0) >= min_gap],
+        key=lambda x: x['change_pct'], reverse=True
+    )[:limit]
+
+    losers = sorted(
+        [s for s in all_s if s.get('change_pct', 0) <= -min_gap],
+        key=lambda x: x['change_pct']
+    )[:limit]
+
+    return jsonify({
+        'gainers': gainers,
+        'losers': losers,
+        'total_gainers': len([s for s in all_s if s.get('change_pct', 0) >= min_gap]),
+        'total_losers': len([s for s in all_s if s.get('change_pct', 0) <= -min_gap]),
+        'total_stocks': len(all_s),
+        'cached': True,
+        'cached_age_s': int(_time.time() - cache['timestamp']),
+    }), 200
+
+
 if __name__ == '__main__':
     import os
     port = int(os.environ.get('PORT', 5003))

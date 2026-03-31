@@ -5,6 +5,7 @@ import time
 import io
 import json
 import urllib.request
+import datetime as _dt
 
 
 def get_sp500_tickers():
@@ -510,6 +511,99 @@ def _is_relative_strength(close, market_close):
     return stock_return > market_return + 5.0
 
 
+##############################################################################
+# New Trading Indicators
+##############################################################################
+
+def _calculate_rsi(close, period=14):
+    """RSI(14) — returns latest value as float, or None."""
+    if len(close) < period + 1:
+        return None
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    val = rsi.iloc[-1]
+    return None if pd.isna(val) else round(float(val), 1)
+
+
+def _calculate_rvol(ohlc):
+    """Relative Volume: today's volume / 20-day average volume."""
+    if 'Volume' not in ohlc.columns or len(ohlc) < 22:
+        return None
+    vol = ohlc['Volume'].fillna(0)
+    avg = vol.iloc[-21:-1].mean()
+    if avg == 0:
+        return None
+    return round(float(vol.iloc[-1] / avg), 2)
+
+
+def _calculate_stop_target(ohlc, current_price):
+    """
+    Stop Loss: 1% below the 10-bar swing low.
+    Target 1: 1.5× risk (good entry). Target 2: 3× risk (runner).
+    Returns (stop_loss, target1, target2, risk_reward).
+    """
+    if len(ohlc) < 10 or current_price <= 0:
+        return None, None, None, None
+    recent_low = float(ohlc['Low'].iloc[-10:].min())
+    stop_loss = round(recent_low * 0.99, 2)
+    risk = current_price - stop_loss
+    if risk <= 0:
+        return round(stop_loss, 2), None, None, None
+    target1 = round(current_price + risk * 1.5, 2)
+    target2 = round(current_price + risk * 3.0, 2)
+    rr = round((target1 - current_price) / risk, 2)
+    return stop_loss, target1, target2, rr
+
+
+def _detect_exit_signals(ohlc, rsi_value):
+    """
+    Detect profit-taking / exit signals.
+    Returns list of signal strings.
+    """
+    signals = []
+    if ohlc is None or len(ohlc) < 20:
+        return signals
+    close = ohlc['Close']
+
+    # RSI overbought (>75)
+    if rsi_value is not None and rsi_value > 75:
+        signals.append('RSI Overbought')
+
+    # MACD histogram turning negative (momentum fading)
+    if len(close) >= 35:
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        hist = macd_line - signal_line
+        if hist.iloc[-1] < 0 and hist.iloc[-2] >= 0:
+            signals.append('MACD Fading')
+
+    # Price extended >10% above 20-day SMA with a bearish candle
+    if len(close) >= 20:
+        sma20 = close.rolling(20).mean().iloc[-1]
+        if sma20 > 0:
+            extension = (close.iloc[-1] - sma20) / sma20 * 100
+            if extension > 10 and ohlc['Close'].iloc[-1] < ohlc['Open'].iloc[-1]:
+                signals.append('Extended+Bearish')
+
+    # Volume dry-up after a big run (RVOL <0.5 after 20%+ gain over 20 days)
+    if 'Volume' in ohlc.columns and len(ohlc) >= 21:
+        vol = ohlc['Volume'].fillna(0)
+        avg_vol = vol.iloc[-21:-1].mean()
+        rvol = float(vol.iloc[-1] / avg_vol) if avg_vol > 0 else 1.0
+        recent_gain = (close.iloc[-1] / close.iloc[-20] - 1) * 100
+        if rvol < 0.5 and recent_gain > 20:
+            signals.append('Volume Dry-Up')
+
+    return signals
+
+
 def _extract_ohlc(data, ticker, tickers):
     """Extract OHLC + Volume DataFrame for a single ticker from batch download data."""
     try:
@@ -597,12 +691,28 @@ def scan_for_sma_proximity(tickers, threshold_pct=5.0, sma_period=150, progress_
                 ohlc = _extract_ohlc(data, ticker, tickers_dl)
                 patterns = detect_patterns(ohlc, market_close) if ohlc is not None else []
 
+                # Trading indicators
+                rsi_val = _calculate_rsi(close)
+                rvol_val = _calculate_rvol(ohlc) if ohlc is not None else None
+                stop_loss, target1, target2, risk_reward = (
+                    _calculate_stop_target(ohlc, float(current_price))
+                    if ohlc is not None else (None, None, None, None)
+                )
+                exit_signals = _detect_exit_signals(ohlc, rsi_val) if ohlc is not None else []
+
                 results.append({
                     'ticker': ticker,
                     'current_price': round(float(current_price), 2),
                     'sma_value': round(float(sma_value), 2),
                     'distance_pct': round(float(distance_pct), 2),
                     'patterns': patterns,
+                    'rsi': rsi_val,
+                    'rvol': rvol_val,
+                    'stop_loss': stop_loss,
+                    'target1': target1,
+                    'target2': target2,
+                    'risk_reward': risk_reward,
+                    'exit_signals': exit_signals,
                 })
         except (KeyError, IndexError, TypeError):
             continue
@@ -628,19 +738,19 @@ def fetch_financials(ticker_symbol):
         date_cols = list(income.columns[:3])  # up to 3 most recent fiscal years
         years = []
 
+        def safe_get(df, row_label, col):
+            try:
+                val = df.loc[row_label, col]
+                if pd.isna(val):
+                    return None
+                return float(val)
+            except (KeyError, TypeError):
+                return None
+
         for date_col in date_cols:
             year_data = {
                 'fiscal_year': str(date_col.year) if hasattr(date_col, 'year') else str(date_col),
             }
-
-            def safe_get(df, row_label, col):
-                try:
-                    val = df.loc[row_label, col]
-                    if pd.isna(val):
-                        return None
-                    return float(val)
-                except (KeyError, TypeError):
-                    return None
 
             revenue = safe_get(income, 'Total Revenue', date_col)
             net_income = safe_get(income, 'Net Income', date_col)
@@ -681,11 +791,40 @@ def fetch_financials(ticker_symbol):
             forward_pe = info.get('forwardPE')
             current_price = info.get('currentPrice') or info.get('regularMarketPrice')
             trailing_eps = info.get('trailingEps')
+
+            # Short interest
+            short_pct = None
+            raw_short = info.get('shortPercentOfFloat')
+            if raw_short is not None:
+                try:
+                    short_pct = round(float(raw_short) * 100, 1)
+                except Exception:
+                    pass
         except Exception:
             trailing_pe = None
             forward_pe = None
             current_price = None
             trailing_eps = None
+            short_pct = None
+
+        # Days to next earnings
+        days_to_earnings = None
+        try:
+            cal = tk.calendar
+            if isinstance(cal, dict):
+                dates = cal.get('Earnings Date', [])
+                if dates:
+                    next_date = dates[0] if isinstance(dates, list) else dates
+                    if hasattr(next_date, 'date'):
+                        dte = (next_date.date() - _dt.date.today()).days
+                    elif hasattr(next_date, 'to_pydatetime'):
+                        dte = (next_date.to_pydatetime().date() - _dt.date.today()).days
+                    else:
+                        dte = None
+                    if dte is not None and -30 <= dte <= 180:
+                        days_to_earnings = int(dte)
+        except Exception:
+            pass
 
         return {
             'ticker': ticker_symbol,
@@ -694,6 +833,8 @@ def fetch_financials(ticker_symbol):
             'forward_pe': round(float(forward_pe), 2) if forward_pe is not None else None,
             'current_price': round(float(current_price), 2) if current_price is not None else None,
             'trailing_eps': round(float(trailing_eps), 2) if trailing_eps is not None else None,
+            'short_pct': short_pct,
+            'days_to_earnings': days_to_earnings,
             'error': None
         }
 
@@ -746,6 +887,8 @@ def run_full_scan(threshold_pct=5.0, sma_period=150, progress_callback=None):
         match['sector'] = ticker_to_sector.get(match['ticker'], 'Unknown')
         match['financials'] = fin_data['years']
         match['financial_error'] = fin_data['error']
+        match['short_pct'] = fin_data.get('short_pct')
+        match['days_to_earnings'] = fin_data.get('days_to_earnings')
 
         # Send completed stock data to the frontend immediately
         if progress_callback:
