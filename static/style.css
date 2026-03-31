@@ -228,7 +228,7 @@ table {
 
 thead th {
     position: sticky;
-    top: 0;
+    top: 48px;
     z-index: 10;
     background: #1a1a2e;
     color: white;

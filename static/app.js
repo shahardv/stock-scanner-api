@@ -119,6 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const smaPeriodSelect    = document.getElementById('sma-period');
 
     let allResults = [];
+    let seenTickers = new Set();          // dedup guard — prevents duplicate rows
     let currentSort = { column: null, direction: 'asc' };
     let currentSmaPeriod = 150;
     let tableInitialized = false;
@@ -149,6 +150,7 @@ document.addEventListener('DOMContentLoaded', () => {
         progressMessage.textContent = 'Starting scan...';
 
         allResults = [];
+        seenTickers = new Set();
         tableInitialized = false;
         streamingFiscalYears = [];
         userSorted = false;
@@ -219,9 +221,12 @@ document.addEventListener('DOMContentLoaded', () => {
             progressBar.style.width = `${pct}%`;
 
             if (data.stage === 'stock_ready' && data.stock) {
-                allResults.push(data.stock);
-                addStockToTable(data.stock);
-                updateSummary();
+                if (!seenTickers.has(data.stock.ticker)) {
+                    seenTickers.add(data.stock.ticker);
+                    allResults.push(data.stock);
+                    addStockToTable(data.stock);
+                    updateSummary();
+                }
             }
 
             if (data.stage === 'done' || data.stage === 'error') {

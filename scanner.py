@@ -873,6 +873,15 @@ def run_full_scan(threshold_pct=5.0, sma_period=150, progress_callback=None):
     # Stage 2: SMA scan
     matches = scan_for_sma_proximity(ticker_list, threshold_pct, sma_period, progress_callback)
 
+    # Deduplicate matches — same ticker can appear from both S&P 500 and NASDAQ lists
+    seen_tickers = set()
+    unique_matches = []
+    for m in matches:
+        if m['ticker'] not in seen_tickers:
+            seen_tickers.add(m['ticker'])
+            unique_matches.append(m)
+    matches = unique_matches
+
     # Stage 3: Fetch financials for matches only — stream each result as it's ready
     total_matches = len(matches)
     for i, match in enumerate(matches):
