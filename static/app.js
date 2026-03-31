@@ -158,11 +158,23 @@ document.addEventListener('DOMContentLoaded', () => {
         currentSmaPeriod = parseInt(smaPeriodSelect.value);
 
         try {
-            const response = await fetch('/api/scan', {
+            let response = await fetch('/api/scan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ threshold, sma_period: currentSmaPeriod })
             });
+
+            // If lock is stale (server reloaded mid-scan), clear it and retry once
+            if (response.status === 409) {
+                progressMessage.textContent = 'Clearing stale scan lock — retrying...';
+                await fetch('/api/scan/stop', { method: 'POST' });
+                response = await fetch('/api/scan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ threshold, sma_period: currentSmaPeriod })
+                });
+            }
+
             if (!response.ok) {
                 const err = await response.json();
                 progressMessage.textContent = err.error || 'Failed to start scan.';
